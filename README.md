@@ -125,5 +125,5 @@ A dynamic web dashboard provides visualization of collected data:
 
 ## 8. Documentation
 
-For a more detailed explanation, please refer to the [Agri_Box_Report.pdf] (./Agri_Box_Report.pdf)
+For a more detailed explanation, please refer to the [Report PDF] (./Agri_Box_Report.pdf)
 

@@ -122,3 +122,8 @@ A dynamic web dashboard provides visualization of collected data:
 - Designing a user-friendly yet lightweight dashboard  
 
 ---
+
+## 8. Documentation
+
+For a more detailed explanation, please refer to the [Agri_Box_Report.pdf] (Agri_Box_Report.pdf)
+

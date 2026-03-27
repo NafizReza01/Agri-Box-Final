@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>AGRI BOX Dashboard</title>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+
+  <style>
+    body { font-family: Arial, sans-serif; margin: 16px; }
+    .meta { color: #555; margin: 8px 0 12px; display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+    .toolbar { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin: 10px 0 16px; }
+    .toolbar .group { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    button, select {
+      padding: 8px 10px; border-radius: 8px; border: 1px solid #ccc; background: #fff; cursor: pointer;
+    }
+    button:hover { background: #f6f6f6; }
+    .pill {
+      padding: 6px 10px; border-radius: 999px; border: 1px solid #ddd; background:#fafafa;
+      font-size: 12px;
+    }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+    @media (min-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; }
+    .card h3 { margin: 0 0 8px; font-size: 14px; color:#333; }
+    .hint { font-size: 12px; color:#666; }
+  </style>
+</head>
+
+<body>
+  <h2>AGRI BOX — Live Dashboard</h2>
+
+  <div class="meta">
+    <div id="status">Connecting…</div>
+    <div class="pill" id="windowPill">Window: All (up to 500)</div>
+    <div class="pill" id="countPill">Samples: 0</div>
+  </div>
+
+  <div class="toolbar">
+    <div class="group">
+      <label for="windowSelect"><strong>Window</strong></label>
+      <select id="windowSelect">
+        <option value="all" selected>All (up to 500)</option>
+        <option value="5">Last 5 min</option>
+        <option value="15">Last 15 min</option>
+        <option value="60">Last 1 hour</option>
+        <option value="360">Last 6 hours</option>
+        <option value="1440">Last 24 hours</option>
+      </select>
+    </div>
+
+    <div class="group">
+      <label style="display:flex; gap:8px; align-items:center;">
+        <input type="checkbox" id="anomalyToggle" checked />
+        <strong>Highlight anomalies</strong>
+      </label>
+      <span class="hint">(spikes / sudden jumps)</span>
+    </div>
+
+    <div class="group">
+      <button id="downloadBtn">Download CSV</button>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>Temperature (°C)</h3>
+      <canvas id="tempChart"></canvas>
+    </div>
+    <div class="card">
+      <h3>Humidity (%)</h3>
+      <canvas id="humChart"></canvas>
+    </div>
+    <div class="card">
+      <h3>Pressure (hPa)</h3>
+      <canvas id="presChart"></canvas>
+    </div>
+    <div class="card">
+      <h3>Soil (ADC 0–4095)</h3>
+      <canvas id="soilChart"></canvas>
+    </div>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import {
+      getFirestore,
+      collection,
+      query,
+      orderBy,
+      limit,
+      onSnapshot
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+    // --- Firebase config ---
+    const firebaseConfig = {
+      apiKey: "AIzaSyCRPI6PfZjL0Hd1C0p6Exde48a0Wg-zirc",
+      authDomain: "agri-box.firebaseapp.com",
+      projectId: "agri-box",
+      storageBucket: "agri-box.firebasestorage.app",
+      messagingSenderId: "925373706931",
+      appId: "1:925373706931:web:42f823869839fbd9f576c6",
+      measurementId: "G-S30D7W9RLG"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    // --- UI elements ---
+    const statusEl = document.getElementById("status");
+    const windowPill = document.getElementById("windowPill");
+    const countPill = document.getElementById("countPill");
+    const windowSelect = document.getElementById("windowSelect");
+    const anomalyToggle = document.getElementById("anomalyToggle");
+    const downloadBtn = document.getElementById("downloadBtn");
+
+    // --- Chart helper (linear x = epoch ms; no time adapter needed) ---
+    function makeChart(canvasId, label, yLabel) {
+      const ctx = document.getElementById(canvasId);
+      return new Chart(ctx, {
+        type: "line",
+        data: {
+          datasets: [
+            {
+              label,
+              data: [], // main line
+              tension: 0.25,
+              pointRadius: 0,
+              borderWidth: 2
+            },
+            {
+              label: "Anomalies",
+              data: [], // points only
+              showLine: false,
+              pointRadius: 4,
+              pointHoverRadius: 6
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          animation: false,
+          parsing: false,
+          plugins: {
+            legend: { display: true }
+          },
+          scales: {
+            x: {
+              type: "linear",
+              title: { display: true, text: "Time" },
+              ticks: {
+                callback: (value) => new Date(Number(value)).toLocaleTimeString()
+              }
+            },
+            y: {
+              title: { display: true, text: yLabel }
+            }
+          }
+        }
+      });
+    }
+
+    const tempChart = makeChart("tempChart", "Temperature (°C)", "°C");
+    const humChart  = makeChart("humChart",  "Humidity (%)", "%");
+    const presChart = makeChart("presChart", "Pressure (hPa)", "hPa");
+    const soilChart = makeChart("soilChart", "Soil (ADC 0–4095)", "raw");
+
+    function updateChart(chart, mainPts, anomalyPts, showAnomalies) {
+      chart.data.datasets[0].data = mainPts;
+      chart.data.datasets[1].data = showAnomalies ? anomalyPts : [];
+      chart.update("none");
+    }
+
+    // --- Anomaly detection (simple + effective for spikes) ---
+    // Flags points where the absolute jump from previous point is unusually large.
+    // We compute a robust baseline using median absolute deviation (MAD) of deltas.
+    function median(arr) {
+      const a = arr.slice().sort((x, y) => x - y);
+      const mid = Math.floor(a.length / 2);
+      return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
+    }
+
+    function detectAnomalies(points, k = 6) {
+      // points: [{x, y}] in time order
+      if (points.length < 8) return [];
+
+      const deltas = [];
+      for (let i = 1; i < points.length; i++) {
+        const dy = points[i].y - points[i - 1].y;
+        deltas.push(Math.abs(dy));
+      }
+
+      const med = median(deltas);
+      const absDev = deltas.map(d => Math.abs(d - med));
+      const mad = median(absDev) || 0;
+
+      // If MAD is 0 (very flat series), fall back to a small epsilon so we can still detect big jumps.
+      const scale = mad === 0 ? 1e-6 : mad;
+
+      const anomalyPts = [];
+      for (let i = 1; i < points.length; i++) {
+        const jump = Math.abs(points[i].y - points[i - 1].y);
+        // robust z-ish score
+        const score = (jump - med) / scale;
+        if (score > k) anomalyPts.push(points[i]);
+      }
+      return anomalyPts;
+    }
+
+    // --- State: keep latest up to 500 in memory, then window-filter client-side ---
+    let allRows = [];   // normalized rows with {t: Date, x: ms, temp, humidity, pressure, soil, deviceId}
+    let lastUpdateDate = null;
+
+    function applyWindowFilter() {
+      const windowValue = windowSelect.value; // "all" or minutes as string
+      const showAnoms = anomalyToggle.checked;
+
+      let filtered = allRows;
+
+      if (windowValue !== "all") {
+        const mins = Number(windowValue);
+        const cutoff = Date.now() - mins * 60 * 1000;
+        filtered = allRows.filter(r => r.x >= cutoff);
+        windowPill.textContent = `Window: Last ${mins} min`;
+      } else {
+        windowPill.textContent = "Window: All (up to 500)";
+      }
+
+      countPill.textContent = `Samples: ${filtered.length}`;
+
+      // Build points
+      const tempPts = filtered.filter(r => typeof r.temp === "number").map(r => ({ x: r.x, y: r.temp }));
+      const humPts  = filtered.filter(r => typeof r.humidity === "number").map(r => ({ x: r.x, y: r.humidity }));
+      const presPts = filtered.filter(r => typeof r.pressure === "number").map(r => ({ x: r.x, y: r.pressure }));
+      const soilPts = filtered.filter(r => typeof r.soil === "number").map(r => ({ x: r.x, y: r.soil }));
+
+      // Detect anomalies per series
+      const tempAn = detectAnomalies(tempPts);
+      const humAn  = detectAnomalies(humPts);
+      const presAn = detectAnomalies(presPts);
+      const soilAn = detectAnomalies(soilPts);
+
+      updateChart(tempChart, tempPts, tempAn, showAnoms);
+      updateChart(humChart,  humPts,  humAn,  showAnoms);
+      updateChart(presChart, presPts, presAn, showAnoms);
+      updateChart(soilChart, soilPts, soilAn, showAnoms);
+
+      if (lastUpdateDate) {
+        statusEl.textContent = `Live ✅ | Last update: ${lastUpdateDate.toLocaleString()}`;
+      } else {
+        statusEl.textContent = "Connected, waiting for readings…";
+      }
+    }
+
+    windowSelect.addEventListener("change", applyWindowFilter);
+    anomalyToggle.addEventListener("change", applyWindowFilter);
+
+    // --- Download CSV (current window) ---
+    function downloadCsvCurrentWindow() {
+      const windowValue = windowSelect.value;
+      let filtered = allRows;
+
+      if (windowValue !== "all") {
+        const mins = Number(windowValue);
+        const cutoff = Date.now() - mins * 60 * 1000;
+        filtered = allRows.filter(r => r.x >= cutoff);
+      }
+
+      if (filtered.length === 0) {
+        alert("No data in the selected window.");
+        return;
+      }
+
+      // CSV header
+      const header = ["tsLocal", "tsISO", "deviceId", "temp", "humidity", "pressure", "soil"];
+      const lines = [header.join(",")];
+
+      for (const r of filtered) {
+        const tsLocal = new Date(r.x).toLocaleString().replaceAll(",", " ");
+        const tsISO = new Date(r.x).toISOString();
+        const row = [
+          `"${tsLocal}"`,
+          tsISO,
+          r.deviceId ?? "",
+          (r.temp ?? ""),
+          (r.humidity ?? ""),
+          (r.pressure ?? ""),
+          (r.soil ?? "")
+        ];
+        lines.push(row.join(","));
+      }
+
+      const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = url;
+
+      const suffix = windowValue === "all" ? "all" : `last_${windowValue}m`;
+      a.download = `agri_box_readings_${suffix}.csv`;
+
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      URL.revokeObjectURL(url);
+    }
+
+    downloadBtn.addEventListener("click", downloadCsvCurrentWindow);
+
+    // --- Firestore live query: latest 500 readings ---
+    const readingsRef = collection(db, "final");
+    const q = query(readingsRef, orderBy("ts", "desc"), limit(500));
+
+    onSnapshot(q, (snapshot) => {
+      const rows = [];
+      snapshot.forEach(doc => rows.push(doc.data()));
+      rows.reverse(); // oldest -> newest
+
+      // Normalize rows; accept only docs with resolved server timestamp
+      const normalized = [];
+      for (const d of rows) {
+        if (!d.ts?.toDate) continue; // skip pending serverTimestamp docs
+        const t = d.ts.toDate();
+        if (isNaN(t.getTime())) continue;
+
+        normalized.push({
+          t,
+          x: t.getTime(),
+          deviceId: d.deviceId ?? "",
+          temp: (typeof d.temp === "number") ? d.temp : null,
+          humidity: (typeof d.humidity === "number") ? d.humidity : null,
+          pressure: (typeof d.pressure === "number") ? d.pressure : null,
+          soil: (typeof d.soil === "number") ? d.soil : null
+        });
+
+        lastUpdateDate = t;
+      }
+
+      allRows = normalized;
+      applyWindowFilter();
+    }, (err) => {
+      console.error(err);
+      statusEl.textContent = `Firestore error: ${err.message}`;
+    });
+  </script>
+</body>
+</html>
+
+<!-- 
+
+node uploader.js - run uploader.js
+npx serve . - run local host
+
+-->

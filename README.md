@@ -127,3 +127,7 @@ A dynamic web dashboard provides visualization of collected data:
 
 For a more detailed explanation, please refer to the [Report PDF](./Agri_Box_Report.pdf)
 
+For steps how to setup & run the project see [How To Run](./howto.md)
+
+For Working Procedure Video visit - https://youtu.be/JpjVT1_RMtQ?si=thXEctoR9-ag0ytO
+

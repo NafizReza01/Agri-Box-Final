@@ -99,3 +99,5 @@ npx serve
 - Data will update automatically after synchronization  
 
 ---
+
+### Working Procedure Video - https://youtu.be/JpjVT1_RMtQ?si=thXEctoR9-ag0ytO
